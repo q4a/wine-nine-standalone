@@ -29,6 +29,7 @@
 #include "resource.h"
 
 static const char * const fn_nine_dll = "d3d9-nine.dll";
+static const char * const fn_backup_dll = "d3d9-backup.dll";
 static const char * const fn_d3d9_dll = "d3d9.dll";
 static const char * const fn_nine_exe = "ninewinecfg.exe";
 
@@ -165,6 +166,37 @@ static BOOL file_exist(LPCSTR filename, BOOL link)
     return ret;
 }
 
+static BOOL rename_file(LPCSTR OldPath, LPCSTR NewPath)
+{
+    BOOL ret;
+    char *src = unix_filename(OldPath);
+    if (!src)
+        return FALSE;
+
+    char *dst = unix_filename(NewPath);
+    if (!dst)
+    {
+        HeapFree(GetProcessHeap(), 0, src);
+        return FALSE;
+    }
+
+    if (!rename(src, dst))
+    {
+        ret = TRUE;
+        TRACE("Renamed from %s to %s\n", nine_dbgstr_a(src),
+              nine_dbgstr_a(dst));
+    } else {
+        ret = FALSE;
+        ERR("Failed to rename from %s to %s\n", nine_dbgstr_a(src),
+            nine_dbgstr_a(dst));
+    }
+
+    HeapFree(GetProcessHeap(), 0, src);
+    HeapFree(GetProcessHeap(), 0, dst);
+
+    return ret;
+}
+
 static BOOL remove_file(LPCSTR filename)
 {
     BOOL ret;
@@ -282,12 +314,10 @@ static void set_dlg_string(HWND hwnd, int dlg_id, int res_id)
 /*
  * Gallium nine
  */
-static BOOL nine_get(void)
+static BOOL nine_registry_enabled(void)
 {
     BOOL ret = FALSE;
     LPSTR value;
-
-    CHAR buf[MAX_PATH];
 
     if (common_get_registry_string(reg_path_dll_overrides, reg_key_d3d9, &value))
     {
@@ -295,37 +325,58 @@ static BOOL nine_get(void)
         HeapFree(GetProcessHeap(), 0, value);
     }
 
+    return ret;
+}
+
+static BOOL nine_get(BOOL WasEnabled)
+{
+    CHAR buf[MAX_PATH], buf_back[MAX_PATH];
+    BOOL ret = nine_registry_enabled();
+
     if (!nine_get_system_path(buf, sizeof(buf)))
     {
         ERR("Failed to get system path\n");
         return FALSE;
     }
     strcat(buf, "\\");
+    strcpy(buf_back, buf);
     strcat(buf, fn_d3d9_dll);
+    strcat(buf_back, fn_backup_dll);
 
     if (!ret && is_symlink(buf))
     {
         /* Sanity: Remove symlink if any */
-        ERR("removing obsolete symlink\n");
-        remove_file(buf);
-        return FALSE;
+        if (WasEnabled)
+        {
+            ERR("removing obsolete symlink\n");
+            remove_file(buf);
+        }
+        ret = FALSE;
+    }
+    else
+    {
+        ret = is_symlink(buf);
+        if (ret && !file_exist(buf, FALSE))
+        {
+            /* broken symlink */
+            if (WasEnabled)
+            {
+                ERR("removing dead symlink\n");
+                remove_file(buf);
+            }
+            ret = FALSE;
+        }
     }
 
-    ret = is_symlink(buf);
-    if (ret && !file_exist(buf, FALSE))
-    {
-        /* broken symlink */
-        remove_file(buf);
-        ERR("removing dead symlink\n");
-        return FALSE;
-    }
+    if (!ret && !file_exist(buf, TRUE) && file_exist(buf_back, TRUE))
+        rename_file(buf_back, buf);
 
     return ret;
 }
 
-static void nine_set(BOOL status, BOOL NoOtherArch)
+static void nine_set(BOOL status, BOOL NoOtherArch, BOOL WasEnabled)
 {
-    CHAR dst[MAX_PATH];
+    CHAR dst[MAX_PATH], dst_back[MAX_PATH];
 
     /* Prevent infinite recursion if called from other arch already */
     if (!NoOtherArch)
@@ -337,20 +388,22 @@ static void nine_set(BOOL status, BOOL NoOtherArch)
         else if (isWoW64())
             Call64bitNineWineCfg(status);
     }
-
-    /* Delete unused DllRedirects key */
-    common_del_registry_key(reg_path_dll_redirects, reg_key_d3d9);
-
-    /* enable native dll */
-    if (!status)
-    {
-        if (!common_del_registry_key(reg_path_dll_overrides, reg_key_d3d9))
-            ERR("Failed to delete 'HKCU\\%s\\%s'\n'", reg_path_dll_overrides, reg_key_d3d9);
-    }
     else
     {
-        if (!common_set_registry_string(reg_path_dll_overrides, reg_key_d3d9, reg_value_override))
-            ERR("Failed to write 'HKCU\\%s\\%s'\n", reg_path_dll_overrides, reg_key_d3d9);
+        /* Delete unused DllRedirects key */
+        common_del_registry_key(reg_path_dll_redirects, reg_key_d3d9);
+
+        /* enable native dll */
+        if (!status)
+        {
+            if (!common_del_registry_key(reg_path_dll_overrides, reg_key_d3d9))
+                ERR("Failed to delete 'HKCU\\%s\\%s'\n'", reg_path_dll_overrides, reg_key_d3d9);
+        }
+        else
+        {
+            if (!common_set_registry_string(reg_path_dll_overrides, reg_key_d3d9, reg_value_override))
+                ERR("Failed to write 'HKCU\\%s\\%s'\n", reg_path_dll_overrides, reg_key_d3d9);
+        }
     }
 
     if (!nine_get_system_path(dst, sizeof(dst))) {
@@ -358,15 +411,25 @@ static void nine_set(BOOL status, BOOL NoOtherArch)
         return;
     }
     strcat(dst, "\\");
+    strcpy(dst_back, dst);
     strcat(dst, fn_d3d9_dll);
+    strcat(dst_back, fn_backup_dll);
 
     if (status)
     {
         HMODULE hmod;
 
         /* Sanity: Always recreate symlink */
-        if (file_exist(dst, TRUE))
-            remove_file(dst);
+        if (file_exist(dst_back, TRUE))
+        {
+            if (file_exist(dst, TRUE))
+                remove_file(dst);
+        }
+        else
+        {
+            if (file_exist(dst, TRUE))
+                rename_file(dst, dst_back);
+        }
 
         hmod = LoadLibraryExA(fn_nine_dll, NULL, DONT_RESOLVE_DLL_REFERENCES);
         if (hmod)
@@ -385,7 +448,8 @@ static void nine_set(BOOL status, BOOL NoOtherArch)
             LocalFree(msg);
         }
     } else {
-        remove_file(dst);
+        if (WasEnabled && is_symlink(dst))
+            remove_file(dst);
     }
 }
 
@@ -401,7 +465,7 @@ static void load_settings(HWND dialog)
     HRESULT hr;
 
     EnableWindow(GetDlgItem(dialog, IDC_ENABLE_NATIVE_D3D9), 0);
-    CheckDlgButton(dialog, IDC_ENABLE_NATIVE_D3D9, nine_get() ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_ENABLE_NATIVE_D3D9, nine_get(FALSE) ? BST_CHECKED : BST_UNCHECKED);
 
     SetDlgItemTextA(dialog, IDC_NINE_STATE_TIP_SO, NULL);
     SetDlgItemTextA(dialog, IDC_NINE_STATE_TIP_DLL, NULL);
@@ -583,14 +647,16 @@ static BOOL ProcessCmdLine(WCHAR *cmdline, BOOL *result)
 
     if (NineSet && !NineClear)
     {
-        nine_set(TRUE, NoOtherArch);
-        *result = nine_get();
+        BOOL WasEnabled = nine_registry_enabled();
+        nine_set(TRUE, NoOtherArch, WasEnabled);
+        *result = nine_get(WasEnabled);
         return TRUE;
     }
     else if (NineClear && !NineSet)
     {
-        nine_set(FALSE, NoOtherArch);
-        *result = !nine_get();
+        BOOL WasEnabled = nine_registry_enabled();
+        nine_set(FALSE, NoOtherArch, WasEnabled);
+        *result = !nine_get(WasEnabled);
         return TRUE;
     }
 
@@ -609,9 +675,10 @@ static INT_PTR CALLBACK AppDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
         if (HIWORD(wParam) != BN_CLICKED) break;
         switch (LOWORD(wParam))
         {
-        case IDC_ENABLE_NATIVE_D3D9:
-            nine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_NATIVE_D3D9) == BST_UNCHECKED, FALSE);
-            CheckDlgButton(hDlg, IDC_ENABLE_NATIVE_D3D9, nine_get() ? BST_CHECKED : BST_UNCHECKED);
+        case IDC_ENABLE_NATIVE_D3D9: ;
+            BOOL WasEnabled = nine_registry_enabled();
+            nine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_NATIVE_D3D9) == BST_UNCHECKED, FALSE, WasEnabled);
+            CheckDlgButton(hDlg, IDC_ENABLE_NATIVE_D3D9, nine_get(WasEnabled) ? BST_CHECKED : BST_UNCHECKED);
             SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
             return TRUE;
         }
