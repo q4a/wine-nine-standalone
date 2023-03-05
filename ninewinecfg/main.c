@@ -243,22 +243,21 @@ static BOOL create_symlink(LPCSTR target, LPCSTR filename)
     return ret;
 }
 
-static BOOL is_symlink(LPCSTR filename)
+static BOOL is_nine_symlink(LPCSTR filename)
 {
-    BOOL ret;
+    ssize_t ret;
     char *fn = unix_filename(filename);
-    struct stat sb;
+    CHAR buf[MAX_PATH];
 
     if (!fn)
         return FALSE;
 
-    ret = !lstat(fn, &sb) && S_ISLNK(sb.st_mode);
+    ret = readlink(fn, buf, sizeof(buf));
+    if ((ret < strlen(fn_nine_dll)) || (ret == sizeof(buf)))
+        return FALSE;
 
-    TRACE("%s: %d\n", nine_dbgstr_a(fn), ret);
-
-    HeapFree(GetProcessHeap(), 0, fn);
-
-    return ret;
+    buf[ret] = 0;
+    return !strcmp(buf + ret - strlen(fn_nine_dll), fn_nine_dll);
 }
 
 static BOOL nine_get_system_path(CHAR *pOut, DWORD SizeOut)
@@ -343,7 +342,7 @@ static BOOL nine_get(void)
     strcat(buf, "\\");
     strcat(buf, fn_d3d9_dll);
 
-    return is_symlink(buf);
+    return is_nine_symlink(buf);
 }
 
 static void nine_set(BOOL status, BOOL NoOtherArch)
@@ -415,7 +414,7 @@ static void nine_set(BOOL status, BOOL NoOtherArch)
             LocalFree(msg);
         }
     } else {
-        if (is_symlink(dst))
+        if (is_nine_symlink(dst))
         {
             remove_file(dst);
             if (file_exist(dst_back, TRUE))
