@@ -349,6 +349,7 @@ static BOOL nine_get(void)
 static void nine_set(BOOL status, BOOL NoOtherArch)
 {
     CHAR dst[MAX_PATH], dst_back[MAX_PATH];
+    BOOL WasEnabled = nine_registry_enabled();
 
     /* Prevent infinite recursion if called from other arch already */
     if (!NoOtherArch)
@@ -415,7 +416,7 @@ static void nine_set(BOOL status, BOOL NoOtherArch)
             LocalFree(msg);
         }
     } else {
-        if (is_symlink(dst))
+        if (WasEnabled && is_symlink(dst))
         {
             remove_file(dst);
             if (file_exist(dst_back, TRUE))
@@ -644,7 +645,7 @@ static INT_PTR CALLBACK AppDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
         if (HIWORD(wParam) != BN_CLICKED) break;
         switch (LOWORD(wParam))
         {
-        case IDC_ENABLE_NATIVE_D3D9: ;
+        case IDC_ENABLE_NATIVE_D3D9:
             nine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_NATIVE_D3D9) == BST_UNCHECKED, FALSE);
             CheckDlgButton(hDlg, IDC_ENABLE_NATIVE_D3D9, nine_get() ? BST_CHECKED : BST_UNCHECKED);
             SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
