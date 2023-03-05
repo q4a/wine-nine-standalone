@@ -328,10 +328,12 @@ static BOOL nine_registry_enabled(void)
     return ret;
 }
 
-static BOOL nine_get(BOOL WasEnabled)
+static BOOL nine_get(void)
 {
-    CHAR buf[MAX_PATH], buf_back[MAX_PATH];
-    BOOL ret, reg, ln;
+    CHAR buf[MAX_PATH];
+
+    if (!nine_registry_enabled())
+        return FALSE;
 
     if (!nine_get_system_path(buf, sizeof(buf)))
     {
@@ -339,42 +341,12 @@ static BOOL nine_get(BOOL WasEnabled)
         return FALSE;
     }
     strcat(buf, "\\");
-    strcpy(buf_back, buf);
     strcat(buf, fn_d3d9_dll);
-    strcat(buf_back, fn_backup_dll);
 
-    reg = nine_registry_enabled();
-    ln = is_symlink(buf);
-    ret = reg && ln;
-    if (!reg && ln)
-    {
-        /* Sanity: Remove symlink if any */
-        if (WasEnabled)
-        {
-            ERR("removing obsolete symlink\n");
-            remove_file(buf);
-        }
-        ret = FALSE;
-    }
-
-    if (ln && !file_exist(buf, FALSE))
-    {
-        /* broken symlink */
-        if (WasEnabled)
-        {
-            ERR("removing dead symlink\n");
-            remove_file(buf);
-        }
-        ret = FALSE;
-    }
-
-    if (!ret && !file_exist(buf, TRUE) && file_exist(buf_back, TRUE))
-        rename_file(buf_back, buf);
-
-    return ret;
+    return is_symlink(buf);
 }
 
-static void nine_set(BOOL status, BOOL NoOtherArch, BOOL WasEnabled)
+static void nine_set(BOOL status, BOOL NoOtherArch)
 {
     CHAR dst[MAX_PATH], dst_back[MAX_PATH];
 
@@ -418,15 +390,12 @@ static void nine_set(BOOL status, BOOL NoOtherArch, BOOL WasEnabled)
         HMODULE hmod;
 
         /* Sanity: Always recreate symlink */
-        if (file_exist(dst_back, TRUE))
+        if (file_exist(dst, TRUE))
         {
-            if (file_exist(dst, TRUE))
-                remove_file(dst);
-        }
-        else
-        {
-            if (file_exist(dst, TRUE))
+            if (!file_exist(dst_back, TRUE))
                 rename_file(dst, dst_back);
+            else
+                remove_file(dst);
         }
 
         hmod = LoadLibraryExA(fn_nine_dll, NULL, DONT_RESOLVE_DLL_REFERENCES);
@@ -446,8 +415,12 @@ static void nine_set(BOOL status, BOOL NoOtherArch, BOOL WasEnabled)
             LocalFree(msg);
         }
     } else {
-        if (WasEnabled && is_symlink(dst))
+        if (is_symlink(dst))
+        {
             remove_file(dst);
+            if (file_exist(dst_back, TRUE))
+                rename_file(dst_back, dst);
+        }
     }
 }
 
@@ -463,7 +436,7 @@ static void load_settings(HWND dialog)
     HRESULT hr;
 
     EnableWindow(GetDlgItem(dialog, IDC_ENABLE_NATIVE_D3D9), 0);
-    CheckDlgButton(dialog, IDC_ENABLE_NATIVE_D3D9, nine_get(FALSE) ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_ENABLE_NATIVE_D3D9, nine_get() ? BST_CHECKED : BST_UNCHECKED);
 
     SetDlgItemTextA(dialog, IDC_NINE_STATE_TIP_SO, NULL);
     SetDlgItemTextA(dialog, IDC_NINE_STATE_TIP_DLL, NULL);
@@ -645,16 +618,14 @@ static BOOL ProcessCmdLine(WCHAR *cmdline, BOOL *result)
 
     if (NineSet && !NineClear)
     {
-        BOOL WasEnabled = nine_registry_enabled();
-        nine_set(TRUE, NoOtherArch, WasEnabled);
-        *result = nine_get(WasEnabled);
+        nine_set(TRUE, NoOtherArch);
+        *result = nine_get();
         return TRUE;
     }
     else if (NineClear && !NineSet)
     {
-        BOOL WasEnabled = nine_registry_enabled();
-        nine_set(FALSE, NoOtherArch, WasEnabled);
-        *result = !nine_get(WasEnabled);
+        nine_set(FALSE, NoOtherArch);
+        *result = !nine_get();
         return TRUE;
     }
 
@@ -674,9 +645,8 @@ static INT_PTR CALLBACK AppDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
         switch (LOWORD(wParam))
         {
         case IDC_ENABLE_NATIVE_D3D9: ;
-            BOOL WasEnabled = nine_registry_enabled();
-            nine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_NATIVE_D3D9) == BST_UNCHECKED, FALSE, WasEnabled);
-            CheckDlgButton(hDlg, IDC_ENABLE_NATIVE_D3D9, nine_get(WasEnabled) ? BST_CHECKED : BST_UNCHECKED);
+            nine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_NATIVE_D3D9) == BST_UNCHECKED, FALSE);
+            CheckDlgButton(hDlg, IDC_ENABLE_NATIVE_D3D9, nine_get() ? BST_CHECKED : BST_UNCHECKED);
             SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
             return TRUE;
         }
